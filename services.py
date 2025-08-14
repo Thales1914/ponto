@@ -1,3 +1,4 @@
+import re
 import psycopg2
 import psycopg2.extras
 import pandas as pd
@@ -201,51 +202,72 @@ def atualizar_registro(id_registro, novo_horario=None, nova_observacao=None):
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                print(f"🛠️ Atualizando registro ID: {id_registro}")
+
+              
                 if nova_observacao is not None:
-                    cursor.execute("UPDATE registros SET observacao = %s WHERE id = %s", (nova_observacao, id_registro))
+                    print(f"📝 Nova observação: {nova_observacao}")
+                    cursor.execute(
+                        "UPDATE registros SET observacao = %s WHERE id = %s",
+                        (nova_observacao, id_registro)
+                    )
+
                 if novo_horario is not None:
+                    print(f"⏰ Novo horário: {novo_horario}")
                     novo_obj = datetime.strptime(novo_horario, "%H:%M:%S").time()
 
                     cursor.execute("""
-                            SELECT r.descricao, r.data, r.cpf_funcionario, f.filial
-                            FROM registros r
-                            JOIN funcionarios f ON f.cpf = r.cpf_funcionario
-                            WHERE r.id = %s
-                        """, (id_registro,))
+                        SELECT r.descricao, r.data, r.cpf_funcionario, f.filial
+                        FROM registros r
+                        JOIN funcionarios f ON f.cpf = r.cpf_funcionario
+                        WHERE r.id = %s
+                    """, (id_registro,))
                     row = cursor.fetchone()
-
                     if row:
                         descricao = row['descricao']
-                        data_str  = row['data']
-                        filial_tx = row['filial'] 
+                        data_str = row['data']
+                        filial_tx = row['filial']
 
                         filial_num = None
                         if filial_tx:
-                           m = re.search(r'\d+', str(filial_tx))
-                           filial_num = int(m.group()) if m else None
+                            m = re.search(r'\d+', str(filial_tx))
+                            filial_num = int(m.group()) if m else None
 
-                    hora_prevista = get_horario_padrao(filial_num, descricao)
+                        hora_prevista = get_horario_padrao(filial_num, descricao)
 
-                    dt_reg_dia   = datetime.strptime(data_str, "%Y-%m-%d")
-                    dt_previsto  = dt_reg_dia.replace(hour=hora_prevista.hour, minute=hora_prevista.minute, second=0, microsecond=0)
-                    dt_novo      = dt_reg_dia.replace(hour=novo_obj.hour, minute=novo_obj.minute, second=novo_obj.second, microsecond=0)
+                        dt_reg_dia = datetime.strptime(data_str, "%Y-%m-%d")
+                        dt_previsto = dt_reg_dia.replace(
+                            hour=hora_prevista.hour, minute=hora_prevista.minute, second=0, microsecond=0
+                        )
+                        dt_novo = dt_reg_dia.replace(
+                            hour=novo_obj.hour, minute=novo_obj.minute, second=0, microsecond=0
+                        )
 
-                    diff_bruta = round((dt_novo - dt_previsto).total_seconds() / 60)
+                        diff_bruta = round((dt_novo - dt_previsto).total_seconds() / 60)
 
-                    if abs(diff_bruta) <= TOLERANCIA_MINUTOS:
-                       diff_final = 0
-                    elif diff_bruta > 0:
-                       diff_final = diff_bruta - TOLERANCIA_MINUTOS
-                    else:
-                       diff_final = diff_bruta + TOLERANCIA_MINUTOS
+                        if abs(diff_bruta) <= TOLERANCIA_MINUTOS:
+                            diff_final = 0
+                        elif diff_bruta > 0:
+                            diff_final = diff_bruta - TOLERANCIA_MINUTOS
+                        else:
+                            diff_final = diff_bruta + TOLERANCIA_MINUTOS
 
-                    cursor.execute(
-                      "UPDATE registros SET hora = %s, diferenca_min = %s WHERE id = %s",
-                      (novo_horario, diff_final, id_registro)
-        )
-    except ValueError: return "Formato de hora inválido. Use HH:MM:SS.", "error"
-    except psycopg2.Error as e: return f"Erro no banco de dados: {e}", "error"
+                        print(f"💡 Diferença recalculada: {diff_final} min")
+
+                        cursor.execute(
+                            "UPDATE registros SET hora = %s, diferenca_min = %s WHERE id = %s",
+                            (novo_horario, diff_final, id_registro)
+                        )
+            conn.commit() 
+            print("✅ Registro atualizado e COMMIT realizado.")
+    except ValueError:
+        print("❌ Erro de formato de hora")
+        return "Formato de hora inválido. Use HH:MM:SS.", "error"
+    except psycopg2.Error as e:
+        print(f"❌ Erro no banco: {e}")
+        return f"Erro no banco de dados: {e}", "error"
     return "Registro atualizado com sucesso.", "success"
+
 
 def adicionar_funcionario(codigo, nome, nome_empresa, cnpj, cpf, cod_tipo, tipo, filial):
     if not all([codigo, nome, nome_empresa, cpf]):
