@@ -81,17 +81,36 @@ def tela_funcionario():
     with tab1:
         st.header("Registro de Ponto")
         proximo_evento = obter_proximo_evento(st.session_state.user_info['cpf'])
+
+        if 'botao_bloqueado' not in st.session_state:
+            st.session_state.botao_bloqueado = False
+
         if proximo_evento == "Jornada Finalizada":
             st.info("Sua jornada de hoje já foi completamente registrada. Bom descanso!")
         else:
-            if st.button(f"Confirmar {proximo_evento}", type="primary", use_container_width=True):
-                mensagem, tipo = bater_ponto(st.session_state.user_info['cpf'], st.session_state.user_info['nome'])
+            botao_registrar = st.button(
+                f"Confirmar {proximo_evento}",
+                type="primary",
+                use_container_width=True,
+                disabled=st.session_state.botao_bloqueado
+            )
+
+            if botao_registrar:
+                st.session_state.botao_bloqueado = True
+
+                mensagem, tipo = bater_ponto(
+                    st.session_state.user_info['cpf'],
+                    st.session_state.user_info['nome']
+                )
+
                 if tipo == "success":
                     st.success(mensagem)
                     time.sleep(1)
-                    st.rerun()
+                    st.rerun()  
                 else:
                     st.error(mensagem)
+                    st.session_state.botao_bloqueado = False
+
 
     with tab2:
         st.header("Histórico dos Meus Pontos")
