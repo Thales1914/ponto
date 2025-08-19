@@ -297,18 +297,22 @@ def tela_admin():
 
                     raw = round((dt_reg - dt_pad).total_seconds() / 60)
 
-                    diff = int(row['Diferença (min)']) if pd.notnull(row['Diferença (min)']) else 0
-                    cor_diff = "green" if diff == 0 else "red" if diff > 0 else "lightgray"
+                    TOLERANCIA = 5  
 
-                    if diff == 0:
-                        if raw < 0:
-                            texto_diff = f"Em ponto ({abs(raw)} min adiantado)"
-                        elif raw > 0:
-                            texto_diff = f"Em ponto ({raw} min atrasado)"
-                        else:
-                            texto_diff = "Em ponto"
+                    if abs(raw) <= TOLERANCIA:
+                       texto_diff = "Em ponto"
+                       cor_diff = "green"
+                    elif raw > 0:
+                       atraso_liquido = raw - TOLERANCIA
+                       texto_diff = f"Atrasado ({atraso_liquido} min)"
+                       cor_diff = "red"
                     else:
-                        texto_diff = f"{'+' if diff > 0 else ''}{diff} min ({'atrasado' if diff > 0 else 'adiantado'})"
+                       adiantado_liquido = abs(raw) - TOLERANCIA
+                       texto_diff = f"Adiantado ({adiantado_liquido} min)"
+                       cor_diff = "orange"
+
+
+    
 
                     col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 2, 3, 1])
                     col1.text(f"Nome: {row['Nome']}")
