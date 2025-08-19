@@ -297,25 +297,86 @@ def _formatar_timedelta(td):
     return f"{hours:02d}:{minutes:02d}"
 
 def gerar_relatorio_organizado_df(df_registros: pd.DataFrame) -> pd.DataFrame:
-    if df_registros.empty: return pd.DataFrame()
+    if df_registros.empty:
+        return pd.DataFrame()
+
     df = df_registros.copy()
     df['Descrição'] = df['Descrição'].replace({"Início do Expediente": "Entrada", "Fim do Expediente": "Saída"})
-    df_pivot = df.pivot_table(index=['Data', 'Código Forte', 'Nome', 'Empresa', 'CNPJ'], columns='Descrição', values='Hora', aggfunc='first').reset_index()
-    df_obs = df.dropna(subset=['Observação']).groupby(['Data', 'Código Forte'])['Observação'].apply(lambda x: ' | '.join(x.unique())).reset_index()
-    df_final = pd.merge(df_pivot, df_obs, on=['Data', 'Código Forte'], how='left').fillna({'Observação': ''})
+
+    def ajustar_cnpj_por_filial(row):
+        if "OMEGA" in row['Empresa'].upper():
+         filial = str(row.get('Filial', '')).strip()
+         if "2" in filial:
+            return "41.600.131/0002-78"
+         elif "3" in filial:
+            return "41.600.131/0003-59"
+         elif "4" in filial: 
+            return "41.600.131/0004-30"
+        return row['CNPJ']
+
+    df['CNPJ'] = df.apply(ajustar_cnpj_por_filial, axis=1)
+
+    df_pivot = df.pivot_table(
+        index=['Data', 'Código Forte', 'Nome', 'Empresa', 'CNPJ'],
+        columns='Descrição',
+        values='Hora',
+        aggfunc='first'
+    ).reset_index()
+
+    df_obs = df.dropna(subset=['Observação']) \
+        .groupby(['Data', 'Código Forte'])['Observação'] \
+        .apply(lambda x: ' | '.join(x.unique())) \
+        .reset_index()
+
+    df_final = pd.merge(df_pivot, df_obs, on=['Data', 'Código Forte'], how='left') \
+        .fillna({'Observação': ''})
+
     for evento in ['Entrada', 'Saída']:
-        if evento not in df_final.columns: df_final[evento] = np.nan
+        if evento not in df_final.columns:
+            df_final[evento] = np.nan
         df_final[evento] = pd.to_datetime(df_final[evento], format='%H:%M:%S', errors='coerce').dt.time
+
     dt_entrada = pd.to_datetime(df_final['Data'].astype(str) + ' ' + df_final['Entrada'].astype(str), errors='coerce')
     dt_saida = pd.to_datetime(df_final['Data'].astype(str) + ' ' + df_final['Saída'].astype(str), errors='coerce')
+
     df_final['Total Horas Trabalhadas'] = (dt_saida - dt_entrada).apply(_formatar_timedelta)
+
     colunas = ['Data', 'Código Forte', 'Nome', 'Empresa', 'CNPJ', 'Entrada', 'Saída', 'Total Horas Trabalhadas', 'Observação']
     for col in colunas:
-        if col not in df_final.columns: df_final[col] = 'N/A'
+        if col not in df_final.columns:
+            df_final[col] = 'N/A'
+
     df_final = df_final[colunas]
     df_final.rename(columns={'Código Forte': 'Código do Funcionário', 'Nome': 'Nome do Funcionário'}, inplace=True)
     df_final['Data'] = pd.to_datetime(df_final['Data']).dt.strftime('%d/%m/%Y')
     return df_final
+
+    def ajustar_horas(row):
+        if pd.isnull(row['Duracao_Bruta']):
+            return "00:00"
+        if str(row.get('Filial')).strip() in ["4", "04", "Filial 4", "Filial 04"]:
+            return _formatar_timedelta(row['Duracao_Bruta'] - pd.Timedelta(hours=2))
+        return _formatar_timedelta(row['Duracao_Bruta'])
+
+    df_final['Total Horas Trabalhadas'] = df_final.apply(ajustar_horas, axis=1)
+
+    colunas = ['Data', 'Código Forte', 'Nome', 'Empresa', 'CNPJ',
+               'Entrada', 'Saída', 'Total Horas Trabalhadas',
+               'Observação', 'Filial']
+    for col in colunas:
+        if col not in df_final.columns:
+            df_final[col] = 'N/A'
+
+    df_final = df_final[colunas]
+    df_final.rename(columns={
+        'Código Forte': 'Código do Funcionário',
+        'Nome': 'Nome do Funcionário'
+    }, inplace=True)
+
+    df_final['Data'] = pd.to_datetime(df_final['Data']).dt.strftime('%d/%m/%Y')
+
+    return df_final
+
 
 def gerar_arquivo_excel(df_organizado, df_bruto, nome_empresa, cnpj, data_inicio, data_fim):
     output_buffer = io.BytesIO()
