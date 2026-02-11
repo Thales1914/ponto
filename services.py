@@ -9,20 +9,17 @@ from contextlib import contextmanager
 import numpy as np
 import io
 import os
-from urllib.parse import urlparse
 
-url = urlparse(os.getenv("DATABASE_URL"))
-
-DB_HOST = url.hostname
-DB_PORT = url.port
-DB_NAME = url.path[1:]
-DB_USER = url.username
-DB_PASS = url.password
+def _get_database_url() -> str:
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL nao configurada.")
+    return db_url
 
 @contextmanager
 def get_db_connection():
-    conn_string = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} port={DB_PORT}"
-    conn = psycopg2.connect(conn_string)
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url, connect_timeout=5)
     try:
         yield conn
     finally:
@@ -36,6 +33,17 @@ def get_horario_padrao(filial: int, proximo_evento: str) -> time:
 
 def _hash_senha(senha: str) -> str:
     return hashlib.sha256(senha.encode('utf-8')).hexdigest()
+
+def _somente_digitos(valor) -> str:
+    return re.sub(r"\D", "", str(valor or ""))
+
+def _cpf_valido(cpf: str) -> bool:
+    return len(_somente_digitos(cpf)) == 11
+
+def _cnpj_valido(cnpj: str) -> bool:
+    if not cnpj:
+        return True
+    return len(_somente_digitos(cnpj)) == 14
 
 def init_db():
     with get_db_connection() as conn:
@@ -166,6 +174,12 @@ def bater_ponto(cpf, nome):
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
+                "SELECT 1 FROM registros WHERE cpf_funcionario = %s AND data = %s AND descricao = %s LIMIT 1",
+                (cpf, agora.strftime("%Y-%m-%d"), proximo_evento)
+            )
+            if cursor.fetchone():
+                return "Ponto ja registrado para este evento hoje.", "warning"
+            cursor.execute(
                 "INSERT INTO registros (id, cpf_funcionario, nome, data, hora, descricao, diferenca_min, observacao) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 novo_reg
@@ -201,6 +215,10 @@ def ler_registros_df():
 def adicionar_funcionario(codigo, nome, nome_empresa, cnpj, cpf, cod_tipo, tipo, filial):
     if not all([codigo, nome, nome_empresa, cpf]):
         return "Campos essenciais (Código Forte, Nome, Empresa, CPF) são obrigatórios.", "error"
+    if not _cpf_valido(cpf):
+        return "CPF invalido. Use 11 digitos.", "error"
+    if not _cnpj_valido(cnpj):
+        return "CNPJ invalido. Use 14 digitos.", "error"
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -250,6 +268,13 @@ def importar_funcionarios_em_massa(df_funcionarios):
                     nome = str(row['NOME']).strip()
                     cpf_raw = str(row['CPF']).strip()
                     
+                    if not _cpf_valido(cpf_raw):
+                        erros.append(f"Linha {index+2}: CPF invalido. Use 11 digitos.")
+                        continue
+                    if not _cnpj_valido(cnpj):
+                        erros.append(f"Linha {index+2}: CNPJ invalido. Use 14 digitos.")
+                        continue
+
                     if cpf_raw in cpfs_existentes:
                         ignorados_count += 1
                         continue

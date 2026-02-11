@@ -1,7 +1,9 @@
+import os
 import streamlit as st
 import pandas as pd
 import time
 import re
+from config import TOLERANCIA_MINUTOS
 from services import get_horario_padrao
 from datetime import date, datetime
 from services import (
@@ -16,7 +18,8 @@ from services import (
     gerar_arquivo_excel,
     ler_empresas,
     importar_funcionarios_em_massa,
-    excluir_funcionario
+    excluir_funcionario,
+    init_db
 )
 
 st.set_page_config(
@@ -24,6 +27,11 @@ st.set_page_config(
     page_icon="assets/logo.png",
     layout="wide"
 )
+
+if "DATABASE_URL" not in os.environ:
+    db_url = st.secrets.get("DATABASE_URL")
+    if db_url:
+        os.environ["DATABASE_URL"] = db_url
 
 def carregar_css_customizado():
     st.markdown("""
@@ -46,6 +54,37 @@ def carregar_css_customizado():
     """, unsafe_allow_html=True)
 
 carregar_css_customizado()
+
+@st.cache_resource(show_spinner=False)
+def _init_db_once():
+    init_db()
+    return True
+
+def _ensure_db_ready():
+    try:
+        _init_db_once()
+    except Exception:
+        st.error("Nao foi possivel conectar ao banco. Verifique DATABASE_URL e o acesso ao banco.")
+        st.stop()
+
+_ensure_db_ready()
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_registros_df():
+    return ler_registros_df()
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_funcionarios_df():
+    return ler_funcionarios_df()
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_empresas_df():
+    return ler_empresas()
+
+def _clear_cached_data():
+    _cached_registros_df.clear()
+    _cached_funcionarios_df.clear()
+    _cached_empresas_df.clear()
 
 if 'user_info' not in st.session_state:
     st.session_state.user_info = None
@@ -105,6 +144,7 @@ def tela_funcionario():
 
                 if tipo == "success":
                     st.success(mensagem)
+                    _clear_cached_data()
                     time.sleep(1)
                     st.rerun()  
                 else:
@@ -114,7 +154,7 @@ def tela_funcionario():
 
     with tab2:
         st.header("Histórico dos Meus Pontos")
-        df_todos_registros = ler_registros_df()
+        df_todos_registros = _cached_registros_df()
         meus_registros_df = df_todos_registros[df_todos_registros['Código Forte'] == st.session_state.user_info['codigo']]
 
         if meus_registros_df.empty:
@@ -186,8 +226,8 @@ def tela_admin():
     with tab1:
         st.header("Filtros do Relatório")
 
-        funcionarios_df = ler_funcionarios_df()
-        empresas_df = ler_empresas()
+        funcionarios_df = _cached_funcionarios_df()
+        empresas_df = _cached_empresas_df()
 
         col1_filtros, col2_filtros, col3_filtros, col4_filtros = st.columns(4)
 
@@ -247,7 +287,7 @@ def tela_admin():
         st.divider()
         st.header("Relatório de Pontos")
 
-        df_registros = ler_registros_df()
+        df_registros = _cached_registros_df()
         df_filtrado = df_registros.copy()
 
         if empresa_selecionada_id != 0:
@@ -297,17 +337,15 @@ def tela_admin():
 
                     raw = round((dt_reg - dt_pad).total_seconds() / 60)
 
-                    TOLERANCIA = 5  
-
-                    if abs(raw) <= TOLERANCIA:
+                    if abs(raw) <= TOLERANCIA_MINUTOS:
                        texto_diff = "Em ponto"
                        cor_diff = "green"
                     elif raw > 0:
-                       atraso_liquido = raw - TOLERANCIA
+                       atraso_liquido = raw - TOLERANCIA_MINUTOS
                        texto_diff = f"Atrasado ({atraso_liquido} min)"
                        cor_diff = "red"
                     else:
-                       adiantado_liquido = abs(raw) - TOLERANCIA
+                       adiantado_liquido = abs(raw) - TOLERANCIA_MINUTOS
                        texto_diff = f"Adiantado ({adiantado_liquido} min)"
                        cor_diff = "orange"
 
@@ -342,6 +380,8 @@ def tela_admin():
                                 horario_para_atualizar = novo_horario.strip() if horario_mudou else None
                                 obs_para_atualizar = nova_obs.strip() if obs_mudou else None
                                 msg, tipo = atualizar_registro(registro_id, novo_horario=horario_para_atualizar, nova_observacao=obs_para_atualizar)
+                                if tipo == "success":
+                                    _clear_cached_data()
                                 st.session_state.status_message = (msg, tipo)
                             st.session_state.edit_id = None
                             st.rerun()
@@ -366,22 +406,27 @@ def tela_admin():
             df_bruto = df_filtrado.sort_values(by=["Data_dt", "Hora"]).copy()
             df_bruto['Data'] = pd.to_datetime(df_bruto['Data']).dt.strftime('%d/%m/%Y')
 
-            excel_buffer = gerar_arquivo_excel(
-                df_organizado,
-                df_bruto.drop(columns=['Data_dt']),
-                nome_empresa_relatorio,
-                cnpj_relatorio,
-                data_inicio,
-                data_fim
-            )
-
-            st.download_button(
-                label="📥 Baixar Relatório Filtrado em Excel",
-                data=excel_buffer,
-                file_name=f"relatorio_ponto_filtrado.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+            try:
+                excel_buffer = gerar_arquivo_excel(
+                    df_organizado,
+                    df_bruto.drop(columns=['Data_dt']),
+                    nome_empresa_relatorio,
+                    cnpj_relatorio,
+                    data_inicio,
+                    data_fim
+                )
+            except ModuleNotFoundError:
+                st.error("Geracao de Excel indisponivel: pacote openpyxl nao instalado.")
+            except Exception as e:
+                st.error(f"Erro ao gerar Excel: {e}")
+            else:
+                st.download_button(
+                    label="Baixar Relatório Filtrado em Excel",
+                    data=excel_buffer,
+                    file_name="relatorio_ponto_filtrado.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
 
     with tab2:
         st.header("Cadastrar Novo Funcionário")
@@ -400,12 +445,14 @@ def tela_admin():
                     novo_codigo.strip(), novo_nome.strip(), nome_empresa.strip(),
                     cnpj.strip(), cpf.strip(), cod_tipo.strip(), tipo.strip(), filial.strip()
                 )
+                if tipo == "success":
+                    _clear_cached_data()
                 st.session_state.status_message = (msg, tipo)
                 st.rerun()
 
     with tab3:
         st.header("Funcionários Cadastrados no Sistema")
-        todos_funcionarios_df = ler_funcionarios_df()
+        todos_funcionarios_df = _cached_funcionarios_df()
         df_exibicao = todos_funcionarios_df[todos_funcionarios_df['role'] == 'employee']
         if df_exibicao.empty:
             st.info("Nenhum funcionário cadastrado no sistema.")
@@ -433,6 +480,8 @@ def tela_admin():
                 with col1:
                     if st.button("Sim, excluir", type="primary", use_container_width=True):
                         msg, tipo = excluir_funcionario(cpf_para_excluir)
+                        if tipo == "success":
+                            _clear_cached_data()
                         st.session_state.status_message = (msg, tipo)
                         st.rerun()
                 with col2:
@@ -450,6 +499,8 @@ def tela_admin():
                         df_para_importar = pd.read_csv(arquivo_csv, sep=';', encoding='latin-1', dtype=str)
                         df_para_importar.columns = [col.strip().upper() for col in df_para_importar.columns]
                         sucesso, ignorados, erros = importar_funcionarios_em_massa(df_para_importar)
+                        if sucesso:
+                            _clear_cached_data()
                         st.success(f"{sucesso} funcionários importados!")
                         if ignorados:
                             st.warning(f"{ignorados} ignorados (CPF já existe).")
